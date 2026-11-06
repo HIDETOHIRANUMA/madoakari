@@ -543,7 +543,7 @@ def main():
     L_single = find_label(l084, r'^単独世帯$', r'単独世帯')
     L_single83 = find_label(l083, r'1人$', r'1人世帯', r'世帯人員が1人')
     L_h65 = find_label(l084, r'65歳以上世帯員のいる', r'65歳以上の世帯員のいる')
-    L_pop = find_label(l082, r'^総数$', r'^総数総数$', r'^人口総数$')
+    L_pop = find_label(l082, r'^総数$', r'^総数\(年齢', r'^総数総数$', r'^人口総数$')
     L_p65 = find_label(l082, r'^総数65歳以上$', r'65歳以上$', r'65歳以上')
     labels_used = {'general': L_gen, 'single': L_single or L_single83, 'h65': L_h65, 'pop': L_pop, 'p65': L_p65}
     print('labels:', labels_used, file=sys.stderr)
