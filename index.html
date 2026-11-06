@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>まどあかり — 国勢調査と3D都市モデルで、街の世帯を灯す</title>
+<meta name="description" content="PLATEAUの3D都市モデルと国勢調査から、建物ごとの世帯を推計して窓の灯りとして描くWebアプリ。見守りと水害への備えに。">
+<link rel="stylesheet" href="vendor/fonts/fonts.css">
+<link rel="stylesheet" href="vendor/cesium/Widgets/widgets.css">
+<link rel="stylesheet" href="css/app.css">
+<script src="vendor/cesium/Cesium.js"></script>
+</head>
+<body>
+<div id="cesium"></div>
+<div id="haze"></div>
+
+<header class="ui brand">
+  <h1>まどあかり</h1>
+  <p>国勢調査と3D都市モデルで、街の世帯を灯す</p>
+</header>
+
+<nav class="ui panel modes" aria-label="表示の切りかえ">
+  <button data-mode="night" aria-pressed="true">夜景</button>
+  <button data-mode="watch" aria-pressed="false">見守り</button>
+  <button data-mode="flood" aria-pressed="false">浸水</button>
+</nav>
+
+<section class="ui panel stats" aria-live="polite">
+  <h2 id="statsTitle">表示中のエリア</h2>
+  <div class="scope" id="statsScope">—</div>
+  <div id="statsRows"></div>
+  <button class="back" id="statsBack">エリア全体に戻る</button>
+  <p class="note">建物ごとの数は、国勢調査の集計値を建物の用途・階数・面積で按分した推計です。</p>
+</section>
+
+<section class="ui panel rank">
+  <h2>町丁目ランキング</h2>
+  <div class="metric" id="rankMetric">—</div>
+  <ol id="rankList"></ol>
+</section>
+
+<div class="ui panel legend" id="legend"></div>
+
+<div class="ui tools">
+  <button id="tourBtn" class="secondary">ツアー</button>
+  <button id="aboutBtn">このアプリについて</button>
+</div>
+
+<div id="popup" role="dialog" aria-label="建物の情報"></div>
+<div id="caption"><div class="l1"></div><div class="l2"></div></div>
+<div id="bignum"><div class="v"></div><div class="k"></div></div>
+
+<dialog id="about">
+  <button class="close" id="aboutClose">閉じる</button>
+  <div class="body" id="aboutBody"></div>
+</dialog>
+
+<div id="loading"><div><div class="t">まどあかり</div><div class="s" id="loadingMsg">街のデータを読みこんでいます</div></div></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
