@@ -354,6 +354,15 @@ const cases = {
     const bad = cp.spawnSync(process.execPath, [EX, path.join(TMP, 'case' + seq), path.join(TMP, 'bad.json'), '139.7,35.8,139.6'], { encoding: 'utf8' });
     check(bad.status !== 0 && !fs.existsSync(path.join(TMP, 'bad.json')), `malformed bbox argument -> exit ${bad.status}`);
   },
+  'kept attributes: PLATEAU uro keys with a parent prefix'() {
+    const attrs = { gml_id: 'k0', 'bldg:usage': '共同住宅', 'uro:BuildingDetailAttribute_uro:buildingRoofEdgeArea': 200.5,
+      'uro:BuildingIDAttribute_uro:buildingID': '13119-bldg-1', '延べ面積換算係数': 1.2, 'uro:BuildingDetailAttribute_uro:landUseType': '住宅用地' };
+    const { d } = extract({ 'k.b3dm': makeB3dm({ blds: [{ parts: [[rect(0, 0, 20, 10)]], base: 40, h: 9, attrs }] }) });
+    const a = d.buildings.length === 1 ? d.buildings[0].a : {};
+    check(a['uro:BuildingDetailAttribute_uro:buildingRoofEdgeArea'] === 200.5 && a['uro:BuildingIDAttribute_uro:buildingID'] === '13119-bldg-1' && a['延べ面積換算係数'] === 1.2,
+      `roof-edge area, building ID and 延べ面積換算係数 kept: ${JSON.stringify(a)}`);
+    check(!('uro:BuildingDetailAttribute_uro:landUseType' in a), 'other uro detail keys are not kept');
+  },
   'make_b3dm.js fixture'() {
     const dir = path.join(TMP, 'repo'); fs.mkdirSync(dir, { recursive: true });
     const r = cp.spawnSync(process.execPath, [path.join(__dirname, 'make_b3dm.js')], { cwd: dir, encoding: 'utf8' });

@@ -10,9 +10,11 @@
 const fs = require('fs');
 const path = require('path');
 
+// PLATEAU batch tables name uro attributes with their parent first, e.g. 'uro:BuildingDetailAttribute_uro:buildingRoofEdgeArea',
+// so the uro keys match at the end of the name.
 const KEEP = [/^gml_id$/, /^bldg:usage$/, /^bldg:class$/, /^bldg:storeysAboveGround$/, /^bldg:storeysBelowGround$/,
-  /^bldg:measuredHeight$/, /^bldg:address$/, /^bldg:yearOfConstruction$/, /^uro:buildingID$/, /^uro:buildingRoofEdgeArea$/,
-  /^uro:totalFloorArea$/, /^uro:buildingFootprintArea$/, /surveyYear/, /町丁目/, /丁目コード/, /区市町村コード/, /大字/, /浸水/, /継続時間/, /土砂/, /^_x$/, /^_y$/,
+  /^bldg:measuredHeight$/, /^bldg:address$/, /^bldg:yearOfConstruction$/, /(^|_)uro:buildingID$/, /(^|_)uro:buildingRoofEdgeArea$/,
+  /(^|_)uro:totalFloorArea$/, /(^|_)uro:buildingFootprintArea$/, /延べ面積換算係数/, /surveyYear/, /町丁目/, /丁目コード/, /区市町村コード/, /大字/, /浸水/, /継続時間/, /土砂/, /^_x$/, /^_y$/,
   /^_zmin$/, /^_zmax$/, /^city_code$/, /耐火/, /構造/];
 
 const A = 6378137.0, F = 1 / 298.257222101, E2 = F * (2 - F);
