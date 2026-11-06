@@ -4,9 +4,18 @@ before the PLATEAU/e-Stat files arrive.  Writes, into the output folder:
   blocks.shp/.dbf  like r2kb (basic unit blocks, SETAI/JINKO)
   areas.shp/.dbf   like r2ka (small areas, KEY_CODE/S_NAME/SETAI/JINKO)
   t083.txt t084.txt t082.txt   e-Stat style tables (code row + label row)
-Usage: python make_synth.py OUTDIR
+Usage: python make_synth.py OUTDIR [--real-estat] [--edge-cases]
+  --real-estat  also write real-layout inputs: tblT001083C13.zip / tblT001084C13.zip /
+                tblT001082C13.zip (CP932, real labels, ward/町/丁目 rows, '-' and X cells,
+                a hidden area with HTKSAKI, a 町 without 丁目 = 13119020000 with only a
+                9-digit row), r2kb13119.zip / r2ka13119.zip, and estat.json (what was done)
+  --edge-cases  two L2 scenarios (the deeper without duration), invalid flood values, an
+                L1-only building, a courtyard building with fp, blocks cut by report.bbox,
+                blocks of 1-2 small buildings, duplicate KEY_CODE records, a slab reaching into
+                a block without a residential building; edge.json lists them
+Without options the output is the same as before.
 """
-import json, math, os, random, struct, sys
+import io, json, math, os, random, struct, sys, tempfile, zipfile
 
 def write_shp(base, polys, fields, rows):
     # polys: list of list-of-rings (lon,lat)
@@ -43,13 +52,34 @@ def write_shp(base, polys, fields, rows):
     h += b'\x1a'
     open(base + '.dbf', 'wb').write(h)
 
+def write_zip(path, members):
+    # members: [(name, bytes)], fixed timestamps so the zip is reproducible
+    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
+        for n, data in members:
+            z.writestr(zipfile.ZipInfo(n, date_time=(2021, 6, 25, 0, 0, 0)), data)
 
+def zip_shp(path, name, polys, fields, rows):
+    with tempfile.TemporaryDirectory() as tmp:
+        write_shp(os.path.join(tmp, name), polys, fields, rows)
+        members = []
+        for e in ('.shp', '.shx', '.dbf'):
+            with open(os.path.join(tmp, name + e), 'rb') as f:
+                members.append((name + e, f.read()))
+        write_zip(path, members)
+
+
+opts = [v for v in sys.argv[1:] if v.startswith('--')]
+bad = [v for v in opts if v not in ('--real-estat', '--edge-cases')]
+if bad or len(sys.argv) - len(opts) != 2:
+    sys.exit('usage: python make_synth.py OUTDIR [--real-estat] [--edge-cases]')
+REAL, EDGE = '--real-estat' in opts, '--edge-cases' in opts
 random.seed(7)
-out = sys.argv[1]
+out = next(v for v in sys.argv[1:] if not v.startswith('--'))
 os.makedirs(out, exist_ok=True)
 LON0, LAT0 = 139.6300, 35.7750
 KX = 111320 * math.cos(math.radians(LAT0)); KY = 110540
 W, H = 4200.0, 2700.0
+CITY = (W, H)       # H is reused below for the table header
 GEOID = 36.7
 
 def ll(x, y):
@@ -161,6 +191,50 @@ for b in blds:
     old = 0.6 if k == 'danchi' else (0.35 if k in ('house', 'shop', 'work') else 0.18)
     b['_e'] = sum(1 for _ in range(b['_s']) if random.random() < old)
 
+EXT_E = 4150.0    # --edge-cases: report.bbox ends here in the east (cuts the blocks of x 4100-4200)
+edge = {}
+if EDGE:
+    # courtyard building (ring = outer wall, fp = net footprint) next to a solid twin, in one block
+    for nm, (x, y, fp) in (('courtyard', (2325, 1725, 1200.0)), ('solid', (2375, 1775, None))):
+        add(rect(x, y, 40, 40), '共同住宅', 5, x, y, 'edge')
+        b = blds[-1]; b['id'] = b['a']['gml_id'] = 'edge_' + nm
+        if fp:
+            b['fp'] = fp
+        b['_hh'] = int(round((fp or 1600.0) * 5 * 0.85 / 50 * 0.9)); b['_s'] = b['_hh'] // 2; b['_e'] = b['_hh'] // 8
+        edge[nm] = b['id']
+    # blocks holding only 1-2 small buildings (their types must come from 町丁目 or view pools)
+    edge['sparse'] = []
+    for n, (x, kind) in enumerate(((350, 'house'), (720, 'house'), (760, 'house'), (950, 'apt'), (1120, 'apt'),
+                                   (1160, 'apt'), (2050, 'apt'), (3020, 'house'), (3060, 'apt'), (3850, 'apt'))):
+        if kind == 'house':
+            add(rect(x, 2520, 8.5, 9.5), '住宅', 2, x, 2520, 'house')
+            blds[-1].update(_hh=1, _s=n % 2, _e=n % 2)
+        else:
+            add(rect(x, 2520, 11, 16), '共同住宅', 2, x, 2520, 'apt')
+            blds[-1].update(_hh=5, _s=3, _e=1)
+        blds[-1]['id'] = blds[-1]['a']['gml_id'] = 'edge_sparse_%d' % n
+        edge['sparse'].append(blds[-1]['id'])
+    # flood attributes: a deeper second L2 scenario without duration, a tie, bad values, L1 only
+    P = '荒川水系荒川（国管理区間）_L2（想定最大規模）'; P1 = '荒川水系荒川（国管理区間）_L1（計画規模）'
+    wet = [b for b in blds if P + '_浸水深' in b['a']]
+    edge['twoL2'] = []
+    for b in wet[::7]:
+        b['a']['荒川水系新河岸川_L2（想定最大規模）_浸水深'] = round(b['a'][P + '_浸水深'] + 0.4, 2)
+        edge['twoL2'].append(b['id'])
+    b = wet[3]; b['a']['荒川水系隅田川_L2（想定最大規模）_浸水深'] = b['a'][P + '_浸水深']; edge['tie'] = b['id']
+    b = wet[4]; b['a']['テスト川_L2（想定最大規模）_浸水深'] = -9999; edge['badDepth'] = b['id']
+    b = wet[5]; b['a'][P + '_浸水継続時間'] = -9999; edge['badDuration'] = b['id']
+    b = next(b for n, b in enumerate(wet) if n > 7 and n % 7 and P1 + '_浸水深' in b['a'])
+    for k in [k for k in b['a'] if k.startswith(P)]:
+        del b['a'][k]
+    edge['l1only'] = b['id']
+    # a slab centred in one block reaching 40 m into the next, whose households have no residential building
+    add(rect(2580, 2530, 120, 12), '共同住宅', 6, 2580, 2530, 'edge')
+    blds[-1].update(id='edge_reach', _hh=40, _s=20, _e=5); blds[-1]['a']['gml_id'] = 'edge_reach'
+    add(rect(2680, 2530, 3, 2.5), '不明', 1, 2680, 2530, 'shed')
+    blds[-1].update(_hh=20, _s=10, _e=3)        # census households of the shed's block (they live in the slab)
+    edge['reach'] = {'slab': 'edge_reach', 'shed': blds[-1]['id']}
+
 # blocks 100 x 100 m
 blocks = {}
 for b in blds:
@@ -174,7 +248,26 @@ for (i, j), bs in sorted(blocks.items()):
     bpolys.append([ring])
     ci, cj = cho_of(x1 + 50, y1 + 50)
     brows.append((cho_key(ci, cj)[:11] + '%04d' % (len(brows) + 1), int(hh * 2.05), hh))
-write_shp(os.path.join(out, 'blocks'), bpolys, [('KEY_CODE', 'C', 16), ('JINKO', 'N', 8), ('SETAI', 'N', 8)], brows)
+def halves(i, j):
+    x1, y1 = i * 100, j * 100
+    return ([ll(x1, y1), ll(x1 + 50, y1), ll(x1 + 50, y1 + 100), ll(x1, y1 + 100)],
+            [ll(x1 + 50, y1), ll(x1 + 100, y1), ll(x1 + 100, y1 + 100), ll(x1 + 50, y1 + 100)])
+if EDGE:
+    # one block stored as two records repeating SETAI/JINKO, one with its numbers split
+    bkeys = sorted(blocks)
+    edge['dupBlocks'] = {}
+    for cell, mode in (((10, 10), 'repeat'), ((12, 10), 'split')):
+        n = bkeys.index(cell); key, jinko, hh = brows[n]
+        west, east = halves(*cell)
+        bpolys[n] = [west]; bpolys.append([east])
+        if mode == 'repeat':
+            brows.append((key, jinko, hh))
+        else:
+            brows[n] = (key, jinko - jinko // 3, hh - hh // 3); brows.append((key, jinko // 3, hh // 3))
+        edge['dupBlocks'][key] = {'mode': mode, 'SETAI': hh}
+    edge['cutBlocks'] = sorted(brows[n][0] for n, c in enumerate(bkeys) if c[0] * 100 < EXT_E < c[0] * 100 + 100)
+BFIELDS = [('KEY_CODE', 'C', 16), ('JINKO', 'N', 8), ('SETAI', 'N', 8)]
+write_shp(os.path.join(out, 'blocks'), bpolys, BFIELDS, brows)
 
 # small areas (cho-chome)
 apolys, arows, stat = [], [], []
@@ -191,7 +284,14 @@ for i in range(7):
         name = '%s%s丁目' % (CHO_NAMES[i], KANJI[j])
         arows.append((cho_key(i, j), name, '板橋区', pop, hh))
         stat.append((cho_key(i, j), name, hh, s, h65, pop, p65, e))
-write_shp(os.path.join(out, 'areas'), apolys, [('KEY_CODE', 'C', 11), ('S_NAME', 'C', 40), ('CITY_NAME', 'C', 20), ('JINKO', 'N', 8), ('SETAI', 'N', 8)], arows)
+if EDGE:
+    # よつば二丁目 stored as two records that both repeat its SETAI/JINKO
+    n = 4 * 4 + 1; x1, y1 = 4 * cho_w, 1 * cho_h; xm = x1 + cho_w / 2
+    apolys[n] = [[ll(x1, y1), ll(xm, y1), ll(xm, y1 + cho_h), ll(x1, y1 + cho_h)]]
+    apolys.append([[ll(xm, y1), ll(x1 + cho_w, y1), ll(x1 + cho_w, y1 + cho_h), ll(xm, y1 + cho_h)]])
+    arows.append(arows[n]); edge['dupArea'] = arows[n][0]
+AFIELDS = [('KEY_CODE', 'C', 11), ('S_NAME', 'C', 40), ('CITY_NAME', 'C', 20), ('JINKO', 'N', 8), ('SETAI', 'N', 8)]
+write_shp(os.path.join(out, 'areas'), apolys, AFIELDS, arows)
 
 def table(path, codes, labels, rows):
     with open(path, 'w', encoding='cp932', newline='') as f:
@@ -206,9 +306,81 @@ table(os.path.join(out, 't084.txt'), H + ['T001084001', 'T001084020', 'T00108403
       [(k, 3, '板橋区', n, 0, '', '', hh, s, h65) for k, n, hh, s, h65, pop, p65, e in stat])
 table(os.path.join(out, 't082.txt'), H + ['T001082001', 'T001082019'], HL + ['総数', '総数６５歳以上'],
       [(k, 3, '板橋区', n, 0, '', '', pop, p65) for k, n, hh, s, h65, pop, p65, e in stat])
+
+if REAL:
+    # ---- real-layout e-Stat inputs (ported from the review's mk_tables.py / mk_estat.py)
+    CHOLESS = {'13119012002': ('13119020000', 'だいもん')}   # みその二丁目 becomes a 町 without 丁目
+    HIDE = ('13119013002', '131190200')                       # しんがし二丁目 hidden, HTKSAKI = だいもん (9 digits)
+    F = ('gen', 'single', 'h65', 'pop', 'p65')
+    A = {}
+    for k, nm, hh, s, h65, pop, p65, e in stat:
+        k2, nm2 = CHOLESS.get(k, (k, nm))
+        A[k2] = dict(name=nm2, gen=hh, single=s, h65=h65, pop=pop, p65=p65)
+    def split(n, k):
+        return [n // k + (1 if i < n % k else 0) for i in range(k)]
+    def v083(d):
+        g, s = d['gen'], d['single']; two = int(g * 0.3); rest = max(0, g - s - two)
+        return [g, s, two, rest // 2, rest - rest // 2, 0, 0, 0, d['pop'], round(d['pop'] / max(g, 1), 2)]
+    def v084(d):
+        g = d['gen']; kin = g - d['single'] - g // 50; nuc = int(kin * 0.85)
+        return [g, kin, nuc, nuc // 3, nuc // 2, kin - nuc, g // 20, g // 6, d['h65']]
+    def v082(d):
+        pop, p65 = d['pop'], d['p65']; p75 = p65 // 2; young = pop // 8; mid = pop - p65 - young
+        tot = [pop] + split(young, 3) + split(mid, 10) + split(p65 - p75, 2) + [young, mid, p65, p75]
+        m = [v // 2 for v in tot]
+        return tot + m + [x - y for x, y in zip(tot, m)]
+    AGES = ['０～４歳', '５～９歳', '１０～１４歳', '１５～１９歳', '２０～２４歳', '２５～２９歳', '３０～３４歳', '３５～３９歳',
+            '４０～４４歳', '４５～４９歳', '５０～５４歳', '５５～５９歳', '６０～６４歳', '６５～６９歳', '７０～７４歳',
+            '１５歳未満', '１５～６４歳', '６５歳以上', '７５歳以上']
+    LAB = {'083': ['一般世帯総数', '世帯人員１人', '世帯人員２人', '世帯人員３人', '世帯人員４人', '世帯人員５人',
+                   '世帯人員６人', '世帯人員７人以上', '一般世帯人員', '１世帯当たり人員'],
+           '084': ['一般世帯総数', '親族のみの世帯', '核家族世帯', 'うち夫婦のみ', 'うち夫婦と子供', '核家族以外',
+                   '６歳未満世帯員のいる世帯', '１８歳未満世帯員のいる世帯', '６５歳以上世帯員のいる一般世帯'],
+           '082': [sx + ('（年齢「不詳」含む）' if a == '' else a) for sx in ('総数', '男', '女') for a in [''] + AGES]}
+    VF = {'083': v083, '084': v084, '082': v082}
+    cell = lambda v: '-' if v == 0 else str(v)
+    def add_up(ds):
+        return {f: sum(d[f] for d in ds) for f in F}
+    recv = HIDE[1] + '00'
+    for code in ('083', '084', '082'):
+        lab = LAB[code]; vf = VF[code]
+        lines = [','.join(H + ['T001%s%03d' % (code, i + 1) for i in range(len(lab))]), ','.join(HL + lab)]
+        row = lambda key, lvl, nm, flags, vals: lines.append(','.join([key, lvl, '板橋区', nm] + flags + vals))
+        row('13119', '1', '', ['0', '', ''], [cell(v) for v in vf(add_up(A.values()))])
+        for c9 in sorted({k[:9] for k in A}):
+            ks = sorted(k for k in A if k[:9] == c9)
+            if ks == [c9 + '00'] and c9 + '00' in [v[0] for v in CHOLESS.values()]:
+                d = dict(A[ks[0]])
+                if ks[0] == recv:
+                    d = add_up([d, A[HIDE[0]]])
+                row(c9, '2', A[ks[0]]['name'], ['2', '', HIDE[0]] if ks[0] == recv else ['0', '', ''], [cell(v) for v in vf(d)])
+                continue
+            row(c9, '2', A[ks[0]]['name'][:-3], ['0', '', ''], [cell(v) for v in vf(add_up([A[k] for k in ks]))])
+            for k in ks:
+                if k == HIDE[0]:
+                    row(k, '3', A[k]['name'], ['1', HIDE[1], ''], ['X'] * len(lab))
+                else:
+                    row(k, '3', A[k]['name'], ['0', '', ''], [cell(v) for v in vf(A[k])])
+        lines.append(','.join(['13120', '1', '練馬区', '', '0', '', ''] + ['-'] * len(lab)))
+        lines.append(','.join(['131200010', '2', '練馬区', '旭丘', '0', '', ''] + ['X'] * len(lab)))
+        lines.append(','.join(['13120001001', '3', '練馬区', '旭丘１丁目', '0', '', ''] + ['-'] * len(lab)))
+        name = 'tblT001%sC13' % code
+        write_zip(os.path.join(out, name + '.zip'), [(name + '.txt', ('\r\n'.join(lines) + '\r\n').encode('cp932'))])
+    zip_shp(os.path.join(out, 'r2kb13119.zip'), 'r2kb13119', bpolys, BFIELDS, brows)
+    arows2 = [(CHOLESS[r[0]][0], CHOLESS[r[0]][1]) + tuple(r[2:]) if r[0] in CHOLESS else r for r in arows]
+    zip_shp(os.path.join(out, 'r2ka13119.zip'), 'r2ka13119', apolys, AFIELDS, arows2)
+    with open(os.path.join(out, 'estat.json'), 'w', encoding='utf-8') as f:
+        json.dump({'choless': CHOLESS['13119012002'][0], 'choless9': '131190200', 'hidden': HIDE[0], 'htksaki': HIDE[1]}, f)
+
 truth = {'households': sum(b['_hh'] for b in blds), 'single': sum(b['_s'] for b in blds), 'elderly_single': sum(b['_e'] for b in blds)}
+report = {'tiles': 0, 'features': len(blds), 'kept': len(blds), 'dup': 0, 'axisModes': {'synthetic': 1}, 'errors': [], 'keys': {}}
+if EDGE:
+    report['bbox'] = list(ll(0, 0) + ll(EXT_E, CITY[1]))
+    edge['bbox'] = report['bbox']
+    with open(os.path.join(out, 'edge.json'), 'w', encoding='utf-8') as f:
+        json.dump(edge, f, ensure_ascii=False, indent=1)
 json.dump({'buildings': [{k: v for k, v in b.items() if not k.startswith('_')} for b in blds],
-           'report': {'tiles': 0, 'features': len(blds), 'kept': len(blds), 'dup': 0, 'axisModes': {'synthetic': 1}, 'errors': [], 'keys': {}}},
+           'report': report},
           open(os.path.join(out, 'buildings.json'), 'w', encoding='utf-8'), ensure_ascii=False)
 json.dump(truth, open(os.path.join(out, 'truth.json'), 'w'))
 print(len(blds), 'buildings', len(brows), 'blocks', len(arows), 'areas', truth)
