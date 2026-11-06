@@ -354,16 +354,37 @@
   const NEAR = 950;
   const WIN = rectImage(10, 7, 1);
   const points = scene.primitives.add(new C.PointPrimitiveCollection({ blendOption: C.BlendOption.OPAQUE }));
-  const windows = scene.primitives.add(new C.BillboardCollection({ blendOption: C.BlendOption.OPAQUE_AND_TRANSLUCENT }));
   const farScale = new C.NearFarScalar(NEAR, 1.0, 9000, 0.72);
   const farCond = new C.DistanceDisplayCondition(NEAR, Number.MAX_VALUE);
   const nearCond = new C.DistanceDisplayCondition(0, NEAR);
+  // window rectangles are grouped in tiles; tiles far from the camera are switched off as a whole
+  const TILE = 450;
+  const tiles = new Map();
   const P = new Array(total), W = new Array(total);
   for (let k = 0; k < total; k++) {
     const position = new C.Cartesian3(LP[3 * k], LP[3 * k + 1], LP[3 * k + 2]);
     P[k] = points.add({ position, pixelSize: 2.2, color: col(NIGHT[0][0]), scaleByDistance: farScale, distanceDisplayCondition: farCond });
-    W[k] = windows.add({ position, image: WIN, sizeInMeters: true, width: 2.6, height: 1.75, color: col(NIGHT[0][0]), distanceDisplayCondition: nearCond });
+    const i = LB[k];
+    const key = Math.floor(center[2 * i] / TILE) + ':' + Math.floor(center[2 * i + 1] / TILE);
+    let t = tiles.get(key);
+    if (!t) {
+      const [tx, ty] = key.split(':').map(Number);
+      const cx = (tx + 0.5) * TILE, cy = (ty + 0.5) * TILE;
+      t = { coll: scene.primitives.add(new C.BillboardCollection({ blendOption: C.BlendOption.OPAQUE_AND_TRANSLUCENT })), center: cart(cx, cy, groundAt(cx, cy) + 20) };
+      t.coll.show = false;
+      tiles.set(key, t);
+    }
+    W[k] = t.coll.add({ position, image: WIN, sizeInMeters: true, width: 2.6, height: 1.75, color: col(NIGHT[0][0]), distanceDisplayCondition: nearCond });
   }
+  const tileList = [...tiles.values()];
+  const reach = NEAR + TILE * 0.75 + 60;
+  function updateTiles() {
+    const cp = viewer.camera.positionWC;
+    for (const t of tileList) t.coll.show = C.Cartesian3.distance(cp, t.center) < reach;
+  }
+  viewer.camera.percentageChanged = 0.02;
+  viewer.camera.changed.addEventListener(updateTiles);
+  scene.preRender.addEventListener(() => { if (!RENDER) return; updateTiles(); });
   // beacons on the water above elderly single households on flooded floors
   const beacons = scene.primitives.add(new C.BillboardCollection());
   const RING = ringImage();
@@ -422,40 +443,60 @@
   let mode = 'night';
   let reveal = 1;        // 0..1 share of lights shown (intro animation)
   let floodLevel = 1;    // 0..1 water rise
-  const typeName = ['その他の世帯', '単独世帯', '65歳以上の単独世帯'];
-  function lightStyle(k) {
+  let beaconAlpha = 1;
+  function styleOf(k, m) {   // [hex, alpha, scale]
     const i = LB[k], t = LT[k], r = LR[k];
-    if (r > reveal) return [null, 0];
-    if (mode === 'watch') {
-      if (t === 2) return [col(HEX.elderly), 1.45];
-      if (t === 1) return [col(HEX.single, 0.92), 1.0];
-      return [col(HEX.dim, 0.7), 0.75];
+    if (m === 'watch') {
+      if (t === 2) return [HEX.elderly, 1, 1.45];
+      if (t === 1) return [HEX.single, 0.92, 1.0];
+      return [HEX.dim, 0.7, 0.75];
     }
-    if (mode === 'flood') {
-      const fd = A.floodDepth[i];
-      const under = LF[k] < A.floodFloors[i] && floodLevel >= 0.999;
-      if (under) return t === 2 ? [col(HEX.priority), 1.2] : [col(HEX.under), 0.95];
-      if (fd > 0 && A.floodHours[i] >= 72) return [col(HEX.isolated, 0.9), 0.85];
-      return [col(HEX.calm, 0.75), 0.75];
+    if (m === 'flood') {
+      if (LF[k] < A.floodFloors[i]) return t === 2 ? [HEX.priority, 1, 1.2] : [HEX.under, 1, 0.95];
+      if (A.floodDepth[i] > 0 && A.floodHours[i] >= 72) return [HEX.isolated, 0.9, 0.85];
+      return [HEX.calm, 0.75, 0.75];
     }
     let acc = 0, hex = NIGHT[0][0];
     const pick = (r * 7.31) % 1;
     for (const [h, w] of NIGHT) { acc += w; if (pick <= acc) { hex = h; break; } }
-    return [col(hex), 1.0];
+    return [hex, 1, 1.0];
   }
-  function restyle() {
+  const STY = {};
+  for (const m of ['night', 'watch', 'flood']) {
+    const arr = new Float32Array(total * 5);
     for (let k = 0; k < total; k++) {
-      const [c, s] = lightStyle(k);
-      const p = P[k], w = W[k];
-      if (!c) { if (p.show) { p.show = false; w.show = false; } continue; }
-      if (!p.show) { p.show = true; w.show = true; }
-      p.color = c; p.pixelSize = 2.2 * s;
-      w.color = c; w.width = 2.6 * s; w.height = 1.75 * s;
+      const [hex, al, sc] = styleOf(k, m);
+      const c = col(hex, al);
+      arr[5 * k] = c.red; arr[5 * k + 1] = c.green; arr[5 * k + 2] = c.blue; arr[5 * k + 3] = c.alpha; arr[5 * k + 4] = sc;
     }
-    if (water) water.show = mode === 'flood';
-    const showB = mode === 'flood' && floodLevel >= 0.999;
-    for (const b of beaconLights) b.show = showB;
+    STY[m] = arr;
   }
+  const scratch = new C.Color();
+  let focusBlock = -1, focusDim = 0;   // tour: dim every light outside one block
+  function paint(mA, mB, u) {
+    const a = STY[mA], b = STY[mB || mA], v = 1 - u;
+    for (let k = 0; k < total; k++) {
+      const p = P[k], w = W[k];
+      if (LR[k] > reveal) { if (p.show) { p.show = false; w.show = false; } continue; }
+      if (!p.show) { p.show = true; w.show = true; }
+      const o = 5 * k;
+      scratch.red = a[o] * v + b[o] * u; scratch.green = a[o + 1] * v + b[o + 1] * u;
+      scratch.blue = a[o + 2] * v + b[o + 2] * u; scratch.alpha = a[o + 3] * v + b[o + 3] * u;
+      const s = a[o + 4] * v + b[o + 4] * u;
+      if (focusDim > 0 && A.block[LB[k]] !== focusBlock) scratch.alpha *= 1 - 0.82 * focusDim;
+      p.color = scratch; p.pixelSize = 2.2 * s;
+      w.color = scratch; w.width = 2.6 * s; w.height = 1.75 * s;
+    }
+  }
+  function showFlood(on) {
+    if (water) water.show = on;
+    const showB = on && floodLevel >= 0.999 && beaconAlpha > 0.01;
+    for (const b of beaconLights) {
+      b.show = showB;
+      if (showB) { scratch.red = 1; scratch.green = 0.42; scratch.blue = 0.53; scratch.alpha = 0.95 * beaconAlpha; b.color = scratch; }
+    }
+  }
+  function restyle() { paint(mode, mode, 0); showFlood(mode === 'flood'); }
 
   // ------------------------------------------------------------------ stats and ranking
   const T = M.totals;
@@ -632,14 +673,242 @@
   $('aboutBtn').addEventListener('click', () => about.showModal());
   $('aboutClose').addEventListener('click', () => about.close());
 
+  // ------------------------------------------------------------------ tour (live) and frame-by-frame rendering
+  const span = Math.max(bbx[2] - bbx[0], bbx[3] - bbx[1]);
+  const dist = (i, j) => Math.hypot(center[2 * i] - center[2 * j], center[2 * i + 1] - center[2 * j + 1]);
+  function computeAnchors() {
+    const big = [];
+    for (let i = 0; i < N; i++) if (A.hh[i] > 0) big.push(i);
+    big.sort((a, b) => A.hh[b] - A.hh[a]);
+    const top = big.slice(0, 150);
+    let best = top[0], bestN = -1;
+    for (const i of top) {
+      let n = 0;
+      for (const j of top) if (dist(i, j) < 450) n += A.hh[j];
+      if (n > bestN) { bestN = n; best = i; }
+    }
+    const near = top.filter((j) => dist(best, j) < 450);
+    const wsum = near.reduce((s, j) => s + A.hh[j], 0) || 1;
+    const dx = near.reduce((s, j) => s + center[2 * j] * A.hh[j], 0) / wsum;
+    const dy = near.reduce((s, j) => s + center[2 * j + 1] * A.hh[j], 0) / wsum;
+    let pop = near.filter((j) => A.floodFloors[j] > 0 && A.single[j] !== 65535).sort((a, b) => A.hh[b] - A.hh[a])[0];
+    if (pop === undefined) pop = near[0];
+    const areas = doc.areas.filter((x) => x.view && x.view.hh >= 30);
+    const wTop = areas.slice().sort((p, q) => q.view.e - p.view.e)[0] || areas[0];
+    const fTop = areas.slice().sort((p, q) => q.view.floodHH - p.view.floodHH)[0] || areas[0];
+    // a block near the estate with a mix of buildings, to show how block totals are shared out
+    let blk = -1, bd = Infinity;
+    const perBlock = new Map();
+    for (let i = 0; i < N; i++) { if (A.hh[i] > 0 && A.block[i] !== 65535) { const q = perBlock.get(A.block[i]) || []; q.push(i); perBlock.set(A.block[i], q); } }
+    for (const [k, list] of perBlock) {
+      const hh = doc.blocks[k].hh || 0;
+      if (hh < 60 || hh > 600 || list.length < 6) continue;
+      const kinds = new Set(list.map((i) => A.cls[i]));
+      if (kinds.size < 2) continue;
+      const cx = list.reduce((s2, i) => s2 + center[2 * i], 0) / list.length, cy = list.reduce((s2, i) => s2 + center[2 * i + 1], 0) / list.length;
+      const d = Math.hypot(cx - dx, cy - dy);
+      if (d > 250 && d < bd) { bd = d; blk = k; }
+    }
+    let bxy = [dx, dy];
+    if (blk >= 0) { const r2 = doc.blocks[blk].ring; bxy = [r2.reduce((s2, p) => s2 + p[0], 0) / r2.length, r2.reduce((s2, p) => s2 + p[1], 0) / r2.length]; }
+    return {
+      mid: [mid[0], mid[1]], danchi: [dx, dy], block: bxy, blockIndex: blk, watch: wTop ? [wTop.c[0], wTop.c[1]] : mid, flood: fTop ? [fTop.c[0], fTop.c[1]] : mid,
+      watchArea: wTop, floodArea: fTop, popup: pop,
+    };
+  }
+  const AN = computeAnchors();
+  const KEYS = [   // time, anchor, range, heading, pitch
+    [0, 'mid', span * 1.25, 8, -40], [11, 'mid', span * 1.0, 16, -34], [21, 'block', 900, 22, -40],
+    [27.5, 'block', 520, 30, -38], [35, 'danchi', 950, 34, -18], [49, 'danchi', 430, 62, -11], [58, 'danchi', 1250, 84, -30],
+    [76, 'watch', 1150, 102, -32], [90, 'mid', span * 0.8, 120, -36], [106, 'danchi', 1500, 138, -27],
+    [122, 'danchi', 640, 152, -15], [138, 'flood', 1500, 168, -40], [153, 'mid', span * 1.05, 188, -36],
+    [172, 'mid', span * 1.3, 200, -42],
+  ];
+  const TOUR_LEN = 172;
+  const ramp = (t, a, b) => Math.max(0, Math.min(1, (t - a) / (b - a)));
+  const ease = (u) => u * u * (3 - 2 * u);
+  function camAt(t) {
+    let i = 0;
+    while (i < KEYS.length - 2 && t >= KEYS[i + 1][0]) i++;
+    const u = Math.max(0, Math.min(1, (t - KEYS[i][0]) / (KEYS[i + 1][0] - KEYS[i][0])));
+    const kv = (k) => { const q = KEYS[Math.max(0, Math.min(KEYS.length - 1, k))]; const p = AN[q[1]]; return [p[0], p[1], Math.log(q[2]), q[3], q[4]]; };
+    const p0 = kv(i - 1), p1 = kv(i), p2 = kv(i + 1), p3 = kv(i + 2);
+    const u2 = u * u, u3 = u2 * u;
+    return p1.map((_, d) => 0.5 * (2 * p1[d] + (-p0[d] + p2[d]) * u + (2 * p0[d] - 5 * p1[d] + 4 * p2[d] - p3[d]) * u2 + (-p0[d] + 3 * p1[d] - 3 * p2[d] + p3[d]) * u3));
+  }
+  const totalHH = T.households;
+  const man = (n) => n >= 10000 ? `約${(n / 10000).toFixed(1)}万` : `約${fmt(Math.round(n / 100) * 100)}`;
+  const scen = Object.keys(M.floodScenarios || {})[0] || '';
+  const river = scen ? scen.replace(/（.*$/, '').replace(/_.*$/, '').replace(/^.*水系/, '') : '川';
+  const CAPS = [
+    [1, 8.5, '夜の窓あかりは、そこで誰かが暮らしているしるし。', ''],
+    [10, 20.5, '国勢調査は、5年に1度、すべての人と世帯を数えます。', 'けれど公表されるのは、町丁目や街区ごとの合計です。'],
+    [21.5, 34, 'その数を、3D都市モデルで建物に配る。', 'PLATEAUの用途・階数・面積から住戸の数を見込み、街区の世帯数を按分します。'],
+    [36, 47.5, '灯りひとつが、ひと世帯。', `${M.cityName}${M.name ? '・' + M.name : ''}の${man(totalHH)}世帯（推計）を、窓の灯りで描いています。`],
+    [59, 70, '見守り', '琥珀色の灯りは、65歳以上のひとり暮らし（推計）。'],
+    [72, 86, `区全体の${man(M.wardElderlySingle)}世帯を、町丁目ごとに建物へ配る。`, '小さな建物は世帯の種類を街区でまとめて割りふり、個々の家はわからないようにしています。'],
+    [92, 103, '浸水', `${river}などが氾濫したら（想定最大規模）。PLATEAUの建物ごとの浸水深と継続時間を使います。`],
+    [106, 118, '水の下になる階に、どれだけの暮らしがあるか。', '赤い輪は、浸水する階にいる65歳以上のひとり暮らし（推計）。'],
+    [139, 151.5, '見守りの計画に。個別避難計画の優先順位に。訓練の想定に。', '町丁目ごとのランキングと建物ごとの推計を、ブラウザだけで。'],
+  ];
+  if (M.validation && M.validation.method) {
+    const v = M.validation.method;
+    CAPS.splice(4, 0, [49.5, 56.5, '推計の確かさ', `町丁目の数だけから街区の世帯数を再現すると、誤差の中央値は${(v.median_ape * 100).toFixed(0)}%（${fmt(v.blocks)}街区で検証）。`]);
+  }
+  const BIG = [
+    [38, 47.5, () => T.households, '灯り＝世帯（推計）', '#ffcf8a'],
+    [62, 70.5, () => T.elderly, '65歳以上の単独世帯（推計）', HEX.elderly],
+    [120, 128.5, () => T.floodHH, '浸水する階に住む世帯（推計）', '#8cc4ef'],
+    [129, 137.5, () => T.floodE, 'うち65歳以上のひとり暮らし（推計）', HEX.priority],
+  ];
+  const lin = (t, pts) => { // piecewise linear
+    if (t <= pts[0][0]) return pts[0][1];
+    for (let k = 1; k < pts.length; k++) if (t <= pts[k][0]) { const [t0, v0] = pts[k - 1], [t1, v1] = pts[k]; return v0 + (v1 - v0) * ease((t - t0) / (t1 - t0)); }
+    return pts[pts.length - 1][1];
+  };
+  const REVEAL = [[0, 0], [1.2, 0], [9.5, 1], [TOUR_LEN, 1]];
+  const WATER = [[0, 0], [93.5, 0], [101.5, 1], [149.5, 1], [152.5, 0]];
+  const BEACON = [[0, 0], [103, 0], [105, 1], [149, 1], [150.5, 0]];
+  const MODES = [[0, 'night', 'night'], [57, 'night', 'watch'], [59.5, 'watch', 'watch'], [91, 'watch', 'night'], [93, 'night', 'night'],
+    [99.5, 'night', 'flood'], [102.5, 'flood', 'flood'], [149.5, 'flood', 'night'], [152.5, 'night', 'night']];
+  function modeAt(t) {
+    let k = 0;
+    while (k < MODES.length - 1 && t >= MODES[k + 1][0]) k++;
+    const [t0, a, b] = MODES[k];
+    if (a === b) return [a, a, 0];
+    const t1 = MODES[k + 1] ? MODES[k + 1][0] : t0 + 1;
+    return [a, b, ease(ramp(t, t0, t1))];
+  }
+  const capEl = $('caption'), bigEl = $('bignum'), fadeEl = $('fade'), endEl = $('endcard');
+  const blockLines = scene.primitives.add(new C.PolylineCollection());
+  const blockLabel = scene.primitives.add(new C.LabelCollection());
+  let blockLine = null, blockText = null;
+  if (AN.blockIndex >= 0) {
+    const b = doc.blocks[AN.blockIndex];
+    const ring = b.ring.concat([b.ring[0]]);
+    const pts = [];
+    for (let k = 0; k < ring.length - 1; k++) {
+      const [x1, y1] = ring[k], [x2, y2] = ring[k + 1];
+      const st = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 10));
+      for (let q = 0; q < st; q++) { const x = x1 + (x2 - x1) * q / st, y = y1 + (y2 - y1) * q / st; pts.push(cart(x, y, groundAt(x, y) + 1.5)); }
+    }
+    pts.push(pts[0]);
+    blockLine = blockLines.add({ positions: pts, width: 3, material: C.Material.fromType('Color', { color: new C.Color(1, 0.85, 0.6, 0) }) });
+    const [bx, by] = AN.block;
+    blockText = blockLabel.add({
+      position: cart(bx, by, groundAt(bx, by) + 70), text: `この街区の世帯数　${fmt(b.hh)}（国勢調査）`,
+      font: '700 22px "Noto Sans JP", sans-serif', fillColor: new C.Color(1, 0.95, 0.86, 0), showBackground: true,
+      backgroundColor: new C.Color(0.03, 0.05, 0.1, 0), backgroundPadding: new C.Cartesian2(14, 9),
+      horizontalOrigin: C.HorizontalOrigin.CENTER, verticalOrigin: C.VerticalOrigin.BOTTOM,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    });
+  }
+  const uiEls = ['.stats', '.rank', '.legend', '.modes'].map((q) => document.querySelector(q));
+  let lastMode = '', lastU = -1, lastReveal = -1, lastUiMode = '';
+  function applyAt(t) {
+    const c = camAt(t);
+    view(c[0], c[1], Math.exp(c[2]), c[3], c[4], 0);
+    if (endEl && !endEl.dataset.ready) {
+      endEl.dataset.ready = '1';
+      endEl.querySelector('.src').textContent = '出典：' + M.sources.join('／') + '。建物ごとの数は推計です。';
+    }
+    updateTiles();
+    reveal = lin(t, REVEAL);
+    floodLevel = lin(t, WATER);
+    beaconAlpha = lin(t, BEACON);
+    setWaterLevel(floodLevel);
+    const [mA, mB, u] = modeAt(t);
+    const key = mA + mB;
+    if (key !== lastMode || Math.abs(u - lastU) > 1e-3 || Math.abs(reveal - lastReveal) > 1e-4) {
+      paint(mA, mB, u); lastMode = key; lastU = u; lastReveal = reveal;
+    }
+    showFlood(floodLevel > 0.001);
+    mode = u > 0.5 ? mB : mA;
+    // method: one block lit, the rest dimmed
+    const fb = ramp(t, 23, 24.5) * (1 - ramp(t, 32.5, 34));
+    if (AN.blockIndex >= 0) {
+      focusBlock = AN.blockIndex;
+      if (Math.abs(fb - focusDim) > 1e-3) { focusDim = fb; paint(mA, mB, u); }
+      blockLine.material.uniforms.color.alpha = 0.9 * fb;
+      blockText.fillColor = new C.Color(1, 0.95, 0.86, fb);
+      blockText.backgroundColor = new C.Color(0.03, 0.05, 0.1, 0.8 * fb);
+      blockLine.show = blockText.show = fb > 0.001;
+    }
+    // fade from and to black, and the end card
+    fadeEl.style.opacity = String(Math.max(1 - ramp(t, 0, 2.2), ramp(t, TOUR_LEN - 2, TOUR_LEN)));
+    endEl.style.opacity = String(ramp(t, 157, 159) * (1 - ramp(t, TOUR_LEN - 2.5, TOUR_LEN - 0.5)));
+    // captions
+    const cap = CAPS.find((q) => t >= q[0] && t <= q[1]);
+    if (cap) {
+      capEl.querySelector('.l1').textContent = cap[2];
+      capEl.querySelector('.l2').textContent = cap[3];
+      capEl.style.opacity = String(ramp(t, cap[0], cap[0] + 0.9) * (1 - ramp(t, cap[1] - 0.9, cap[1])));
+    } else capEl.style.opacity = '0';
+    const big = BIG.find((q) => t >= q[0] && t <= q[1]);
+    if (big) {
+      const v = big[2]() * (1 - Math.pow(1 - ramp(t, big[0], big[0] + 1.8), 3));
+      bigEl.querySelector('.v').textContent = fmt(v);
+      bigEl.querySelector('.v').style.color = big[4];
+      bigEl.querySelector('.k').textContent = big[3];
+      bigEl.style.opacity = String(ramp(t, big[0], big[0] + 0.7) * (1 - ramp(t, big[1] - 0.7, big[1])));
+    } else bigEl.style.opacity = '0';
+    // app UI and a building card near the end
+    const ui = ramp(t, 138.5, 140) * (1 - ramp(t, 151, 152.5));
+    document.body.classList.toggle('showui', ui > 0.001);
+    uiEls.forEach((e) => { if (e) e.style.opacity = String(ui); });
+    if (ui > 0.001) {
+      if (lastUiMode !== 'flood') { mode = 'flood'; focus = AN.floodArea; renderStats(); renderRank(); renderLegend(); showOutline(AN.floodArea); lastUiMode = 'flood'; }
+    } else if (lastUiMode) { focus = null; showOutline(null); lastUiMode = ''; }
+    const pu = ramp(t, 124, 124.8) * (1 - ramp(t, 135.5, 136.3));
+    if (pu > 0.001 && AN.popup !== undefined) {
+      const i = AN.popup;
+      popup.innerHTML = describe(i);
+      popup.style.display = 'block';
+      const top = cart(center[2 * i], center[2 * i + 1], A.base[i] + A.height[i]);
+      const sc = C.SceneTransforms.worldToWindowCoordinates(scene, top);
+      if (sc) { popup.style.left = Math.min(window.innerWidth - popup.offsetWidth - 20, sc.x + 24) + 'px'; popup.style.top = Math.max(20, sc.y - popup.offsetHeight - 10) + 'px'; }
+      popup.style.opacity = String(pu);
+    } else { popup.style.display = 'none'; }
+  }
+  if (RENDER) {
+    document.body.classList.add('render');
+    viewer.useDefaultRenderLoop = false;
+    const epoch = C.JulianDate.fromIso8601('2020-10-01T12:00:00Z');
+    window.__tourLength = TOUR_LEN;
+    window.__frame = (t) => { applyAt(t); scene.render(C.JulianDate.addSeconds(epoch, t, new C.JulianDate())); return true; };
+  }
+  function playTour() {
+    document.body.classList.add('render', 'touring');
+    const t0 = performance.now();
+    const step = () => {
+      const t = (performance.now() - t0) / 1000;
+      if (t > TOUR_LEN || !document.body.classList.contains('touring')) { stopTour(); return; }
+      applyAt(t);
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+  function stopTour() {
+    document.body.classList.remove('render', 'touring', 'showui');
+    uiEls.forEach((e) => { if (e) e.style.opacity = ''; });
+    capEl.style.opacity = '0'; bigEl.style.opacity = '0'; popup.style.display = 'none';
+    reveal = 1; floodLevel = 1; beaconAlpha = 1; setWaterLevel(1); focus = null; showOutline(null);
+    setMode('night'); home(); updateTiles();
+  }
+  $('tourBtn').addEventListener('click', () => { if (document.body.classList.contains('touring')) stopTour(); else playTour(); });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('touring')) stopTour(); });
+
   // ------------------------------------------------------------------ start
   setMode('night');
   home();
+  updateTiles();
   if (Q.get('mode')) setMode(Q.get('mode'));
   if (Q.get('view')) {
     const [x, y, r, h, p] = Q.get('view').split(',').map(Number);
     view(x, y, r, h, p, 0);
+    updateTiles();
   }
+  if (Q.has('tour')) playTour();
   scene.requestRender();
   $('loading').classList.add('done');
   window.__app = { viewer, scene, setMode, view, focusArea, doc, A, M, restyle, setWaterLevel, groundAt, center,

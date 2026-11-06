@@ -124,7 +124,18 @@ dialog .small { font-size: 12px; color: var(--muted); }
 #bignum .v { font-size: clamp(40px, 6vw, 96px); font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; line-height: 1; text-shadow: 0 0 30px rgba(0,0,0,.8); }
 #bignum .k { margin-top: 10px; font-size: clamp(13px, 1.3vw, 20px); color: #d6dceb; letter-spacing: 0.1em; text-shadow: 0 0 14px rgba(0,0,0,.95); }
 
-body.render .modes, body.render .stats, body.render .rank, body.render .tools, body.render .legend { display: none; }
+#fade { position: fixed; inset: 0; z-index: 40; background: #000; opacity: 0; pointer-events: none; }
+#endcard { position: fixed; inset: 0; z-index: 21; display: grid; place-content: center; text-align: center; pointer-events: none; opacity: 0;
+  background: radial-gradient(60% 45% at 50% 50%, rgba(2, 3, 9, 0.72), rgba(2, 3, 9, 0.2) 70%, rgba(2, 3, 9, 0)); }
+#endcard .t { font-family: var(--serif); font-weight: 600; font-size: clamp(48px, 6.4vw, 120px); letter-spacing: 0.22em; color: #fff3dc;
+  text-shadow: 0 0 40px rgba(255, 190, 110, 0.55); margin-right: -0.22em; }
+#endcard .s { margin-top: 18px; font-family: var(--serif); font-size: clamp(16px, 1.7vw, 30px); letter-spacing: 0.18em; color: #e8ddca; }
+#endcard .src { position: fixed; left: 0; right: 0; bottom: 4.5vh; font-size: clamp(10px, 0.85vw, 14px); color: #9aa4b7; letter-spacing: 0.04em; }
+body.render #caption, body.render #bignum, body.render #popup { transition: none; }
+body.touring .tools { display: flex; }
+body.touring .tools #aboutBtn { display: none; }
+body.render .modes, body.render .stats, body.render .rank, body.render .legend { display: none; }
+body.render:not(.touring) .tools { display: none; }
 body.render .cesium-viewer-bottom { display: none; }
 body.render.showui .modes, body.render.showui .stats, body.render.showui .rank, body.render.showui .legend { display: flex; }
 body.render.showui .stats { display: block; }
